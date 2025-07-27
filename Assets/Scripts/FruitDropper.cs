@@ -13,7 +13,13 @@ public class FruitDropper : MonoBehaviour
     public float smoothing = 0.1f; // Smoothing for movement
     
     [Header("Boundary Settings")]
-    public float boundaryPadding = 0.5f; // Extra padding from screen edges
+    public float boundaryPadding = 0.1f; // Extra padding from screen edges
+    
+    [Header("Preview Settings")]
+    public Transform previewParent; // Parent object for the preview (optional)
+    public Vector3 previewOffset = new Vector3(0, 1.5f, 0); // Offset from dropper position
+    public float previewScale = 0.7f; // Scale of the preview fruit
+    public Material previewMaterial; // Optional transparent material for preview
     
     private InputSystem_Actions inputActions;
     private Vector2 currentMoveInput;
@@ -24,6 +30,10 @@ public class FruitDropper : MonoBehaviour
     private Vector2 screenBounds;
     private float objectWidth;
     private float objectHeight;
+    
+    // Preview system variables
+    private GameObject currentPreview;
+    private GameObject nextFruitToDropPrefab;
     
     public Dictionary<string, string> nextFruitMapping;
     
@@ -43,12 +53,23 @@ public class FruitDropper : MonoBehaviour
         
         // Calculate screen boundaries
         CalculateScreenBounds();
+        
+        // Select the first fruit to preview
+        SelectNextFruit();
+    }
+    
+    void Start()
+    {
+        // Show initial preview
+        ShowPreview();
     }
     
     void OnEnable()
     {
         inputActions.Enable();
         
+        GameManager.OnGamePaused += OnGamePaused;
+        GameManager.OnGameResumed += OnGameResumed;
         // Subscribe to touch movement (delta tracking)
         inputActions.Player.Move.performed += OnTouchMove;
         inputActions.Player.Move.canceled += OnTouchMoveStop;
@@ -61,6 +82,10 @@ public class FruitDropper : MonoBehaviour
     void OnDisable()
     {
         // Unsubscribe from all events
+        
+        GameManager.OnGamePaused -= OnGamePaused;
+        GameManager.OnGameResumed -= OnGameResumed;
+    
         inputActions.Player.Move.performed -= OnTouchMove;
         inputActions.Player.Move.canceled -= OnTouchMoveStop;
         inputActions.Player.TouchPress.started -= OnTouchStart;
@@ -72,7 +97,24 @@ public class FruitDropper : MonoBehaviour
     void OnDestroy()
     {
         inputActions?.Dispose();
+        
+        // Clean up preview
+        if (currentPreview != null)
+        {
+            DestroyImmediate(currentPreview);
+        }
     }
+    private void OnGamePaused()
+{
+    // Disable input when paused
+    inputActions.Disable();
+}
+
+private void OnGameResumed()
+{
+    // Re-enable input when resumed
+    inputActions.Enable();
+}
     
     private void CalculateScreenBounds()
     {
@@ -83,11 +125,11 @@ public class FruitDropper : MonoBehaviour
             Debug.LogError("No main camera found!");
             return;
         }
-        
+
         // Convert screen dimensions to world coordinates
         Vector3 screenPoint = mainCamera.ScreenToWorldPoint(new Vector3(Screen.width, Screen.height, mainCamera.transform.position.z));
         screenBounds = new Vector2(Mathf.Abs(screenPoint.x), Mathf.Abs(screenPoint.y));
-        
+
         // Get object dimensions (assuming the fruit dropper has a collider or renderer)
         Renderer objectRenderer = GetComponent<Renderer>();
         if (objectRenderer != null)
@@ -118,6 +160,90 @@ public class FruitDropper : MonoBehaviour
         }
     }
     
+    private void SelectNextFruit()
+    {
+        // Select a random fruit for the next drop
+        int randomIndex = Random.Range(0, fruits.Length);
+        nextFruitToDropPrefab = fruits[randomIndex];
+    }
+    
+    private void ShowPreview()
+    {
+        if (nextFruitToDropPrefab == null) return;
+        
+        // Destroy existing preview
+        if (currentPreview != null)
+        {
+            DestroyImmediate(currentPreview);
+        }
+        
+        // Create new preview
+        Vector3 previewPosition = transform.position + previewOffset;
+        currentPreview = Instantiate(nextFruitToDropPrefab, previewPosition, Quaternion.identity);
+        
+        // Set parent if specified
+        if (previewParent != null)
+        {
+            currentPreview.transform.SetParent(previewParent);
+        }
+        
+        // Scale down the preview
+        currentPreview.transform.localScale = Vector3.one * previewScale;
+        
+        // Remove physics components from preview
+        RemovePhysicsFromPreview(currentPreview);
+        
+        // Apply preview material if specified
+        ApplyPreviewMaterial(currentPreview);
+        
+        // Add a tag or layer to identify it as preview
+        currentPreview.tag = "Preview";
+        currentPreview.name = nextFruitToDropPrefab.name + "_Preview";
+    }
+    
+    private void RemovePhysicsFromPreview(GameObject preview)
+    {
+        // Remove rigidbody to prevent physics interactions
+        Rigidbody rb = preview.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            DestroyImmediate(rb);
+        }
+        
+        // Set colliders as triggers or remove them
+        Collider[] colliders = preview.GetComponentsInChildren<Collider>();
+        foreach (Collider col in colliders)
+        {
+            col.isTrigger = true; // Make it a trigger so it doesn't interfere
+            // Or you can destroy it: DestroyImmediate(col);
+        }
+    }
+    
+    private void ApplyPreviewMaterial(GameObject preview)
+    {
+        if (previewMaterial == null) return;
+        
+        // Apply preview material to all renderers
+        Renderer[] renderers = preview.GetComponentsInChildren<Renderer>();
+        foreach (Renderer renderer in renderers)
+        {
+            Material[] materials = new Material[renderer.materials.Length];
+            for (int i = 0; i < materials.Length; i++)
+            {
+                materials[i] = previewMaterial;
+            }
+            renderer.materials = materials;
+        }
+    }
+    
+    private void UpdatePreviewPosition()
+    {
+        if (currentPreview != null)
+        {
+            currentPreview.transform.position = transform.position + previewOffset;
+        }
+    }
+    
     // Called when touch delta changes (sliding)
     private void OnTouchMove(InputAction.CallbackContext context)
     {
@@ -137,29 +263,46 @@ public class FruitDropper : MonoBehaviour
     }
     
     // Called when touch starts
-    private void OnTouchStart(InputAction.CallbackContext context)
-    {
-        isTouching = true;
-        Debug.Log("Touch started");
-    }
+ private void OnTouchStart(InputAction.CallbackContext context)
+{
+    if (!GameManager.Instance.IsGameActive()) return; // Don't process if game is paused
     
+    isTouching = true;
+    Debug.Log("Touch started");
+    ShowPreview();
+}
+
     // Called when touch ends - This is where you drop the fruit
+
     private void OnTouchEnd(InputAction.CallbackContext context)
     {
+        if (!GameManager.Instance.IsGameActive()) return; // Don't process if game is paused
+
         isTouching = false;
         currentMoveInput = Vector2.zero;
-        
         Debug.Log("Touch ended - Dropping fruit!");
-        
-        // Drop a random fruit when touch ends
         DropFruit();
+        HidePreview();
+        SelectNextFruit();
+        ShowPreview();
     }
     
     private void DropFruit()
     {
-        int randomIndex = Random.Range(0, fruits.Length);
-        GameObject selectedFruit = fruits[randomIndex];
-        Instantiate(selectedFruit, transform.position, Quaternion.identity);
+        // Drop the fruit that was being previewed
+        if (nextFruitToDropPrefab != null)
+        {
+            Instantiate(nextFruitToDropPrefab, transform.position, Quaternion.identity);
+        }
+    }
+    
+    private void HidePreview()
+    {
+        if (currentPreview != null)
+        {
+            DestroyImmediate(currentPreview);
+            currentPreview = null;
+        }
     }
     
     void Update()
@@ -169,6 +312,9 @@ public class FruitDropper : MonoBehaviour
         
         // Apply movement to the fruit dropper with boundary constraints
         MoveDropper(smoothedMoveInput);
+        
+        // Update preview position to follow the dropper
+        UpdatePreviewPosition();
     }
     
     private void MoveDropper(Vector2 moveInput)
@@ -201,18 +347,6 @@ public class FruitDropper : MonoBehaviour
         position.y = Mathf.Clamp(position.y, minY, maxY);
         
         return position;
-    }
-    
-    // Alternative method: Check if trying to move out of bounds and prevent movement
-    private bool IsWithinBounds(Vector3 targetPosition)
-    {
-        float minX = -screenBounds.x + objectWidth + boundaryPadding;
-        float maxX = screenBounds.x - objectWidth - boundaryPadding;
-        float minY = -screenBounds.y + objectHeight + boundaryPadding;
-        float maxY = screenBounds.y - objectHeight - boundaryPadding;
-        
-        return targetPosition.x >= minX && targetPosition.x <= maxX && 
-               targetPosition.y >= minY && targetPosition.y <= maxY;
     }
     
     // Call this if screen size changes or orientation changes
